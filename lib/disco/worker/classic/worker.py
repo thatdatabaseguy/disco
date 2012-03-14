@@ -291,25 +291,25 @@ class Worker(worker.Worker):
             raise NotImplementedError("Storing partitioned outputs in DDFS is not yet supported")
         entries = self.status_iter(self.input(task, open=self.opener('map', 'in', params)),
                                    "%s entries mapped")
-        bufs = {}
+        buf = {}
         self['map_init'](entries, params)
         def output(partition):
             return self.output(task, partition, open=self.opener('map', 'out', params)).file.fds[-1]
         for entry in entries:
             for key, val in self['map'](entry, params):
                 part = None
-                if self['partitions']:
-                    part = str(self['partition'](key, self['partitions'], params))
                 if self['combiner']:
-                    if part not in bufs:
-                        bufs[part] = {}
-                    for record in self['combiner'](key, val, bufs[part], False, params) or ():
-                        output(part).add(*record)
+                    for key, val in self['combiner'](key, val, buf, False, params) or ():
+                        if self['partitions']:
+                            part = str(self['partition'](key, self['partitions'], params))
+                        output(part).add(key, val)
                 else:
                     output(part).add(key, val)
-        for part, buf in bufs.items():
-            for record in self['combiner'](None, None, buf, True, params) or ():
-                output(part).add(*record)
+
+        for key, val in self['combiner'](None, None, buf, True, params) or ():
+            if self['partitions']:
+                part = str(self['partition'](key, self['partitions'], params))
+            output(part).add(key, val)
 
     def reduce_input(self, task, params):
         # master should feed only the partitioned inputs to reduce (and shuffle them?)
