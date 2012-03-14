@@ -10,7 +10,7 @@ from disco.error import DataError
 MB = 1024**2
 MIN_DISK_SPACE  = 1 * MB
 MAX_RECORD_SIZE = 1 * MB
-HUNK_SIZE       = 1 * MB
+HUNK_SIZE       = 8 * MB
 CHUNK_SIZE      = 64 * MB
 
 # chunk size seems to be ~ half what it should be
