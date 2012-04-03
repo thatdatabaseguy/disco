@@ -325,18 +325,21 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
             yield m.groups()
 
         if m:
-            buf = StringIO(buf_val[m.end():])
+            buf.close()
+            buf = StringIO()
+            buf.write(buf_val[m.end():])
         
         if not len(r) or (size!=None and tot >= size):
             if size != None and tot < size:
                 raise DataError("Truncated input: "\
                 "Expected %d bytes, got %d" % (size, tot), fname)
-            if len(buf):
-                if output_tail:
-                    yield [buf.getvalue()]
-                else:
+            if not buf.closed:
+                buf_val = buf.getvalue()
+                if len(buf_val) > 0 and output_tail:
+                    yield [buf_val]
+                elif len(buf_val) > 0:
                     print "Couldn't match the last %d bytes in %s. "\
-                    "Some bytes may be missing from input." % (len(buf.getvalue()), fname)
+                    "Some bytes may be missing from input." % (len(buf_val), fname)
             break
 
 def default_partition(key, nr_partitions, params):
