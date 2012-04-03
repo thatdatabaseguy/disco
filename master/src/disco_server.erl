@@ -114,7 +114,7 @@ gc_blacklist(Hosts) ->
 
 % called from remote nodes
 -spec get_worker_jobpack(node(), nonempty_string()) ->
-                                {'ok', {file:io_device(), non_neg_integer()}}.
+                                {'ok', {file:io_device(), non_neg_integer(), pid()}}.
 get_worker_jobpack(Master, JobName) ->
     gen_server:call({?MODULE, Master}, {jobpack, JobName}).
 
@@ -487,9 +487,12 @@ do_send_jobpack(JobName, From) ->
     case prim_file:read_file_info(JobFile) of
         {ok, #file_info{size = Size}} ->
             {ok, File} = file:open(JobFile, [binary, read]),
+            {Worker, _Tag} = From,
+            monitor(process, Worker),
             gen_server:reply(From, {ok, {File, Size, self()}}),
             receive
-                done -> ok
+                done -> ok;
+                {'DOWN', _, _, _, _} -> ok
             after ?JOBPACK_HANDLE_TIMEOUT ->
                 ok
             end,
