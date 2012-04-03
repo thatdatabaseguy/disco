@@ -7,6 +7,7 @@ This module defines the interfaces for the job functions,
 some default values, as well as otherwise useful functions.
 """
 import re, cPickle
+from cStringIO import StringIO
 from disco.error import DataError
 
 def notifier(urls):
@@ -308,7 +309,7 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
 
     """
     item_re = re.compile(item_re_str)
-    buf = ""
+    buf = StringIO()
     tot = 0
     while True:
         if size:
@@ -316,24 +317,27 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
         else:
             r = fd.read(read_buffer_size)
         tot += len(r)
-        buf += r
+        
+        buf.write(f)
 
-        m = item_re.match(buf)
-        while m:
+        buf_val = buf.getvalue()
+        m = None
+        for m in item_re.finditer(buf_val):
             yield m.groups()
-            buf = buf[m.end():]
-            m = item_re.match(buf)
 
+        if m:
+            buf = StringIO(buf_val[m.end():])
+        
         if not len(r) or (size!=None and tot >= size):
             if size != None and tot < size:
                 raise DataError("Truncated input: "\
                 "Expected %d bytes, got %d" % (size, tot), fname)
             if len(buf):
                 if output_tail:
-                    yield [buf]
+                    yield [buf.getvalue()]
                 else:
                     print "Couldn't match the last %d bytes in %s. "\
-                    "Some bytes may be missing from input." % (len(buf), fname)
+                    "Some bytes may be missing from input." % (len(buf.getvalue()), fname)
             break
 
 def default_partition(key, nr_partitions, params):
