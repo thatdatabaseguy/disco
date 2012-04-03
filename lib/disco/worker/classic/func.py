@@ -317,8 +317,7 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
         else:
             r = fd.read(read_buffer_size)
         tot += len(r)
-        
-        buf.write(f)
+        buf.write(r)
 
         buf_val = buf.getvalue()
         m = None
