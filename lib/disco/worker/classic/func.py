@@ -7,7 +7,6 @@ This module defines the interfaces for the job functions,
 some default values, as well as otherwise useful functions.
 """
 import re, cPickle
-from cStringIO import StringIO
 from disco.error import DataError
 
 def notifier(urls):
@@ -270,6 +269,7 @@ def old_netstr_reader(fd, size, fname, head=''):
         idx, data, tot, key = read_netstr(idx, data, tot)
         idx, data, tot, val = read_netstr(idx, data, tot)
         yield key, val
+        
 
 def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=8192):
     """
@@ -309,38 +309,58 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
 
     """
     item_re = re.compile(item_re_str)
-    buf = StringIO()
-    tot = 0
-    while True:
-        if size:
-            r = fd.read(min(read_buffer_size, size - tot))
-        else:
-            r = fd.read(read_buffer_size)
-        tot += len(r)
-        buf.write(r)
-
-        buf_val = buf.getvalue()
-        m = None
-        for m in item_re.finditer(buf_val):
+    tail = ''
+    len_tail = 0
+    if hasattr(fd, 'fileno') and size is not None:
+        # Memory mapped file should be the most efficient way to do this
+        # can be accessed directly from 
+        import mmap
+        mm_file = mmap.mmap(fd.fileno(), size, prot=mmap.PROT_READ)
+        for m in item_re.finditer(mm_file):
             yield m.groups()
-
-        if m:
-            buf.close()
-            buf = StringIO()
-            buf.write(buf_val[m.end():])
+        if m and m.end() != len(mm_file):
+            if output_tail:
+                tail = mm_file[m.end():]
+            len_tail = len(mm_file) - m.end()
+        mm_file.close()
         
-        if not len(r) or (size!=None and tot >= size):
-            if size != None and tot < size:
-                raise DataError("Truncated input: "\
-                "Expected %d bytes, got %d" % (size, tot), fname)
-            if not buf.closed:
-                buf_val = buf.getvalue()
-                if len(buf_val) > 0 and output_tail:
-                    yield [buf_val]
-                elif len(buf_val) > 0:
-                    print "Couldn't match the last %d bytes in %s. "\
-                    "Some bytes may be missing from input." % (len(buf_val), fname)
-            break
+    else:
+        from cStringIO import StringIO
+        buf = StringIO()
+        tot = 0
+        while True:
+            if size:
+                r = fd.read(min(read_buffer_size, size-tot))
+            else:
+                r = fd.read(read_buffer_size)
+                
+            tot += len(r)
+            buf.write(r)
+            buf_val = buf.getvalue()
+            
+            for m in item_re.finditer(buf_val):
+                yield m.groups()
+            
+            if m:
+                buf_val = buf_val[m.end():]
+                buffer = StringIO()
+                buffer.write(buf_val)
+                
+            if not len(r) or (size!=None and tot >= size):    
+                if size != None and tot < size:
+                    raise DataError("Truncated input: "\
+                    "Expected %d bytes, got %d" % (size, tot), fname)
+                break
+            
+        tail = buf_val
+        len_tail = len(tail)
+        
+    if len(tail) > 0:
+        if output_tail:
+            yield [tail]
+        else:
+            print "Couldn't match the last %d bytes in %s. "\
+            "Some bytes may be missing from input." % (len_tail, fname)                        
 
 def default_partition(key, nr_partitions, params):
     """Returns ``hash(str(key)) % nr_partitions``."""
