@@ -311,10 +311,15 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
     item_re = re.compile(item_re_str)
     tail = ''
     len_tail = 0
-    if hasattr(fd, 'fileno') and size is not None:
+    if hasattr(fd, 'fileno'):
         # Memory mapped file should be the most efficient way to do this
         # can be accessed directly from 
         import mmap
+        
+        # mmap-ing a zero-length file throws an error
+        if size == 0:
+            return
+    
         mm_file = mmap.mmap(fd.fileno(), 0, prot=mmap.PROT_READ)
         for m in item_re.finditer(mm_file):
             yield m.groups()
