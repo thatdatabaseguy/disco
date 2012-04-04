@@ -315,7 +315,7 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
         # Memory mapped file should be the most efficient way to do this
         # can be accessed directly from 
         import mmap
-        mm_file = mmap.mmap(fd.fileno(), size, prot=mmap.PROT_READ)
+        mm_file = mmap.mmap(fd.fileno(), 0, prot=mmap.PROT_READ)
         for m in item_re.finditer(mm_file):
             yield m.groups()
         if m and m.end() != len(mm_file):
