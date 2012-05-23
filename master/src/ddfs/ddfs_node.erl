@@ -1,7 +1,7 @@
 -module(ddfs_node).
 -behaviour(gen_server).
 
--export([get_vols/0, gate_get_blob/0, put_blob/1, get_tag_data/3]).
+-export([get_vols/0, gate_get_blob/0, put_blob/1, get_tag_data/3, rescan_tags/0]).
 
 -export([start_link/1, stop/0, init/1, handle_call/3, handle_cast/2,
          handle_info/2, terminate/2, code_change/3]).
@@ -15,12 +15,13 @@
                 vols :: [volume()],
                 putq :: http_queue:q(),
                 getq :: http_queue:q(),
-                tags :: gb_tree()}).
+                tags :: gb_tree(),
+                scanner :: pid()}).
 
 -spec start_link(term()) -> no_return().
 start_link(Config) ->
     process_flag(trap_exit, true),
-    error_logger:info_report([{"DDFS node starts"}]),
+    error_logger:info_msg("DDFS node starts on ~p", [node()]),
     case catch gen_server:start_link(
             {local, ddfs_node}, ddfs_node, Config, [{timeout, ?NODE_STARTUP}]) of
         {ok, _Server} ->
@@ -52,6 +53,9 @@ gate_get_blob() ->
 put_blob(BlobName) ->
     gen_server:call(?MODULE, {put_blob, BlobName}, ?PUT_WAIT_TIMEOUT).
 
+-spec rescan_tags() -> 'ok'.
+rescan_tags() ->
+    gen_server:cast(?MODULE, rescan_tags).
 
 -spec get_tag_data(node(), tagid(), taginfo()) -> {'ok', binary()} | {'error', term()}.
 get_tag_data(SrcNode, TagId, TagNfo) ->
@@ -88,7 +92,7 @@ init(Config) ->
             ok
     end,
 
-    spawn_link(fun() -> refresh_tags(DdfsRoot, Vols) end),
+    Scanner = spawn_link(fun() -> refresh_tags(DdfsRoot, Vols) end),
     spawn_link(fun() -> monitor_diskspace(DdfsRoot, Vols) end),
 
     {ok, #state{nodename = NodeName,
@@ -96,7 +100,8 @@ init(Config) ->
                 vols = Vols,
                 tags = Tags,
                 putq = http_queue:new(PutMax, ?HTTP_QUEUE_LENGTH),
-                getq = http_queue:new(GetMax, ?HTTP_QUEUE_LENGTH)}}.
+                getq = http_queue:new(GetMax, ?HTTP_QUEUE_LENGTH),
+                scanner = Scanner}}.
 
 handle_call(get_tags, _, #state{tags = Tags} = S) ->
     {reply, gb_trees:keys(Tags), S};
@@ -126,6 +131,10 @@ handle_call({put_tag_data, {Tag, Data}}, _From, S) ->
 handle_call({put_tag_commit, Tag, TagVol}, _, S) ->
     {Reply, S1} = do_put_tag_commit(Tag, TagVol, S),
     {reply, Reply, S1}.
+
+handle_cast(rescan_tags, #state{scanner = Scanner} = S) ->
+    Scanner ! rescan,
+    {noreply, S};
 
 handle_cast({update_vols, NewVols}, #state{vols = Vols} = S) ->
     {noreply, S#state{vols = lists:ukeymerge(2, NewVols, Vols)}};
@@ -170,18 +179,18 @@ do_get_diskspace(#state{vols = Vols}) ->
                 end, {0, 0}, Vols).
 
 -spec do_put_blob(nonempty_string(), {pid(), _}, #state{}) ->
-                 {'reply', 'full' | {'error', 'no_volumes'}, #state{}}
+                         {'reply', 'full' | {'error', 'no_volumes'}, #state{}}
                              | {'noreply', #state{}}.
 do_put_blob(_BlobName, _From, #state{vols = []} = S) ->
     {reply, {error, no_volumes}, S};
-do_put_blob(BlobName, {Pid, _Ref} = From, #state{putq = Q} = S) ->
+do_put_blob(BlobName, {Pid, _Ref} = From,
+            #state{putq = Q, nodename = NodeName,
+                   root = Root, vols = Vols} = S) ->
     Reply = fun() ->
-                    {_Space, VolName} = choose_vol(S#state.vols),
+                    {_Space, VolName} = choose_vol(Vols),
                     {ok, Local, Url} = ddfs_util:hashdir(list_to_binary(BlobName),
-                                                         S#state.nodename,
-                                                         "blob",
-                                                         S#state.root,
-                                                         VolName),
+                                                         NodeName, "blob",
+                                                         Root, VolName),
                     case ddfs_util:ensure_dir(Local) of
                         ok ->
                             gen_server:reply(From, {ok, Local, Url});
@@ -219,7 +228,7 @@ do_get_tag_data(TagId, VolName, From, S) ->
         {ok, Binary} ->
             gen_server:reply(From, {ok, Binary});
         {error, Reason} ->
-            error_logger:warning_report({"Read failed", TagPath, Reason}),
+            error_logger:warning_msg("Read failed at ~p: ~p", [TagPath, Reason]),
             gen_server:reply(From, {error, read_failed})
     end.
 
@@ -250,7 +259,7 @@ do_put_tag_data(Tag, Data, S) ->
 -spec do_put_tag_commit(tagname(), [{node(), volume_name()}], #state{}) ->
                        {{'ok', url()} | {'error', _}, #state{}}.
 do_put_tag_commit(Tag, TagVol, S) ->
-    {value, {_, VolName}} = lists:keysearch(node(), 1, TagVol),
+    {_, VolName} = lists:keyfind(node(), 1, TagVol),
     {ok, Local, Url} = ddfs_util:hashdir(Tag,
                                          S#state.nodename,
                                          "tag",
@@ -280,10 +289,9 @@ try_makedir(Dir) ->
         {error, eexist} ->
             ok;
         Error ->
-            error_logger:warning_report({
-                "Error initializing directory. This volume will be ignored!",
-                Dir,
-               Error}),
+            error_logger:warning_msg(
+              "Error initializing directory ~p: ~p. This volume will be ignored!",
+              [Dir, Error]),
             error
     end.
 
@@ -309,8 +317,7 @@ find_vols(Root) ->
                     init_vols(Root, VolNames)
             end;
         Error ->
-            error_logger:warning_report(
-                {"Invalid root directory", Root, Error}),
+            error_logger:warning_msg("Invalid root directory ~p: ~p", [Root, Error]),
             Error
     end.
 
@@ -360,7 +367,12 @@ monitor_diskspace(Root, Vols) ->
 
 -spec refresh_tags(path(), [volume()]) -> no_return().
 refresh_tags(Root, Vols) ->
-    timer:sleep(?FIND_TAGS_INTERVAL),
+    receive
+        rescan ->
+            ok
+    after ?FIND_TAGS_INTERVAL ->
+            ok
+    end,
     {ok, Tags} = find_tags(Root, Vols),
     gen_server:cast(ddfs_node, {update_tags, Tags}),
     refresh_tags(Root, Vols).

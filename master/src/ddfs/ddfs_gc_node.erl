@@ -1,6 +1,6 @@
 -module(ddfs_gc_node).
 -export([start_gc_node/4]).
--export([gc_node_init/3]).
+
 -include_lib("kernel/include/file.hrl").
 
 -include("config.hrl").
@@ -12,7 +12,7 @@
 
 -spec start_gc_node(node(), pid(), erlang:timestamp(), phase()) -> pid().
 start_gc_node(Node, Master, Now, Phase) ->
-    spawn_link(Node, ?MODULE, gc_node_init, [Master, Now, Phase]).
+    spawn_link(Node, fun () -> gc_node_init(Master, Now, Phase) end).
 
 -spec gc_node_init(pid(), erlang:timestamp(), phase()) -> 'ok'.
 gc_node_init(Master, Now, Phase) ->
@@ -32,9 +32,8 @@ gc_node_init(Master, Now, Phase) ->
     _ = ets:new(blob, [named_table, set, private]),
     traverse(Now, Root, VolNames, blob),
     traverse(Now, Root, VolNames, tag),
-    error_logger:info_report({"GC: # blobs", ets:info(blob, size)}),
-    error_logger:info_report({"GC: # tags", ets:info(tag, size)}),
-
+    error_logger:info_msg("GC: found ~p blob, ~p tag candidates on ~p",
+                          [ets:info(blob, size), ets:info(tag, size), node()]),
     % Now, dispatch to the phase that is running on the master.
     gc_node(Master, Now, Root, Phase).
 
@@ -120,6 +119,7 @@ local_gc(Master, Now, Root) ->
     delete_orphaned(Master, Now, Root, blob, ?ORPHANED_BLOB_EXPIRES),
     delete_orphaned(Master, Now, Root, tag, ?ORPHANED_TAG_EXPIRES),
     ddfs_gc_main:node_gc_done(Master, gc_run_stats()),
+    ddfs_node:rescan_tags(),  % update local node cache
     ok.
 
 -spec obj_stats(object_type()) -> obj_stats().
@@ -161,7 +161,7 @@ delete_orphaned(Master, Now, Root, Type, Expires) ->
 -spec delete_if_expired(file:filename(), float(),
                         non_neg_integer(), boolean()) -> boolean().
 delete_if_expired(Path, Diff, Expires, true) when Diff > Expires ->
-    error_logger:info_report({"GC: Deleting expired object (paranoid)", Path}),
+    error_logger:info_msg("GC: Deleting expired object (paranoid) at ~p", [Path]),
     Trash = "!trash." ++ filename:basename(Path),
     Deleted = filename:join(filename:dirname(Path), Trash),
     % Chmod u+w deleted files, so they can removed safely with rm without -f
@@ -172,7 +172,7 @@ delete_if_expired(Path, Diff, Expires, true) when Diff > Expires ->
     true;
 
 delete_if_expired(Path, Diff, Expires, _Paranoid) when Diff > Expires ->
-    error_logger:info_report({"GC: Deleting expired object", Path}),
+    error_logger:info_msg("GC: Deleting expired object at ~p", [Path]),
     _ = prim_file:delete(Path),
     timer:sleep(100),
     true;

@@ -19,7 +19,7 @@ op('POST', "/disco/job/" ++ _, Req) ->
                 reply({ok, [<<"ok">>, list_to_binary(JobName)]}, Req);
             Error ->
                 ErrorString = disco:format("Job failed to start: ~p", [Error]),
-                error_logger:warning_report(ErrorString),
+                lager:warning("Job failed to start: ~p", [Error]),
                 reply({ok, [<<"error">>, list_to_binary(ErrorString)]}, Req)
         end
     end;
@@ -31,8 +31,8 @@ op('POST', "/disco/ctrl/" ++ Op, Req) ->
 op('GET', "/disco/ctrl/" ++ Op, Req) ->
     Query = Req:parse_qs(),
     Name =
-        case lists:keysearch("name", 1, Query) of
-            {value, {_, N}} -> N;
+        case lists:keyfind("name", 1, Query) of
+            {_, N} -> N;
             _ -> false
         end,
     reply(getop(Op, {Query, Name}), Req);
@@ -81,11 +81,11 @@ getop("rawevents", {_Query, Name}) ->
     job_file(Name, "events");
 
 getop("jobevents", {Query, Name}) ->
-    {value, {_, NumS}} = lists:keysearch("num", 1, Query),
+    {_, NumS} = lists:keyfind("num", 1, Query),
     Num = list_to_integer(NumS),
-    Q = case lists:keysearch("filter", 1, Query) of
+    Q = case lists:keyfind("filter", 1, Query) of
             false -> "";
-            {value, {_, F}} -> string:to_lower(F)
+            {_, F} -> string:to_lower(F)
         end,
     {ok, Ev} = gen_server:call(event_server,
                                {get_job_events, Name, string:to_lower(Q), Num}),
@@ -143,8 +143,8 @@ getop("get_settings", _Query) ->
 
 getop("get_mapresults", {_Query, Name}) ->
     case gen_server:call(event_server, {get_map_results, Name}) of
-        {ok, Res} ->
-            {ok, Res};
+        {ok, _Res} = OK ->
+            OK;
         _ ->
             not_found
     end;
@@ -254,7 +254,7 @@ update_setting(<<"max_failure_rate">>, Val, App) ->
                              list_to_integer(binary_to_list(Val)));
 
 update_setting(Key, Val, _) ->
-    error_logger:info_report([{"Unknown setting", Key, Val}]).
+    lager:info("Unknown setting: ~p = ~p", [Key, Val]).
 
 count_maps(L) ->
     {M, N} = lists:foldl(fun ("map", {M, N}) ->

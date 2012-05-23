@@ -11,6 +11,7 @@
          choose_write_nodes/2,
          new_blob/3,
          safe_gc_blacklist/0, safe_gc_blacklist/1,
+         refresh_tag_cache/0,
          tag_notify/2,
          tag_operation/2, tag_operation/3,
          update_gc_stats/1,
@@ -35,6 +36,7 @@
 
 -record(state, {tags      = gb_trees:empty() :: gb_tree(),
                 tag_cache = false            :: 'false' | gb_set(),
+                cache_refresher              :: pid(),
 
                 nodes             = []                :: [node_info()],
                 write_blacklist   = []                :: [node()],
@@ -51,7 +53,7 @@
 %% API functions
 
 start_link() ->
-    error_logger:info_report([{"DDFS master starts"}]),
+    lager:info("DDFS master starts"),
     case gen_server:start_link({local, ?MODULE}, ?MODULE, [], []) of
         {ok, Server} -> {ok, Server};
         {error, {already_started, Server}} -> {ok, Server}
@@ -99,7 +101,7 @@ get_hosted_tags(Host) ->
 choose_write_nodes(K, Exclude) ->
     gen_server:call(?MODULE, {choose_write_nodes, K, Exclude}).
 
--spec get_tags('all') -> {[node()], [node()], [binary()]};
+-spec get_tags('gc') -> {'ok', [tagname()], [node()]} | 'too_many_failed_nodes';
               ('safe') -> {'ok', [binary()]} | 'too_many_failed_nodes'.
 get_tags(Mode) ->
     gen_server:call(?MODULE, {get_tags, Mode}, ?GET_TAG_TIMEOUT).
@@ -133,15 +135,19 @@ update_nodestats(NewNodes) ->
 update_tag_cache(TagCache) ->
     gen_server:cast(?MODULE, {update_tag_cache, TagCache}).
 
+-spec refresh_tag_cache() -> 'ok'.
+refresh_tag_cache() ->
+    gen_server:cast(?MODULE, refresh_tag_cache).
+
 %% ===================================================================
 %% gen_server callbacks
 
 init(_Args) ->
     spawn_link(fun() -> monitor_diskspace() end),
     spawn_link(fun() -> ddfs_gc:start_gc(disco:get_setting("DDFS_DATA")) end),
-    spawn_link(fun() -> refresh_tag_cache_proc() end),
+    Refresher = spawn_link(fun() -> refresh_tag_cache_proc() end),
     put(put_port, disco:get_setting("DDFS_PUT_PORT")),
-    {ok, #state{}}.
+    {ok, #state{cache_refresher = Refresher}}.
 
 handle_call(dbg_get_state, _, S) ->
     {reply, S, S};
@@ -159,9 +165,9 @@ handle_call(gc_stats, _F, #state{gc_stats = Stats} = S) ->
     {reply, {ok, Stats}, S};
 
 handle_call({choose_write_nodes, K, Exclude}, _,
-            #state{write_blacklist = WBL, gc_blacklist = GBL} = S) ->
+            #state{nodes = N, write_blacklist = WBL, gc_blacklist = GBL} = S) ->
     BL = lists:umerge(WBL, GBL),
-    {reply, do_choose_write_nodes(S#state.nodes, K, Exclude, BL), S};
+    {reply, do_choose_write_nodes(N, K, Exclude, BL), S};
 
 handle_call({new_blob, Obj, K, Exclude}, _,
             #state{nodes = N, gc_blacklist = GBL, write_blacklist = WBL} = S) ->
@@ -206,6 +212,10 @@ handle_cast({update_gc_stats, Stats}, S) ->
 handle_cast({update_tag_cache, TagCache}, S) ->
     {noreply, S#state{tag_cache = TagCache}};
 
+handle_cast(refresh_tag_cache, #state{cache_refresher = Refresher} = S) ->
+    Refresher ! refresh,
+    {noreply, S};
+
 handle_cast({update_nodes, NewNodes}, S) ->
     {noreply, do_update_nodes(NewNodes, S)};
 
@@ -219,7 +229,7 @@ handle_info({'DOWN', _, _, Pid, _}, S) ->
 %% gen_server callback stubs
 
 terminate(Reason, _State) ->
-    error_logger:warning_report({"DDFS master dies", Reason}).
+    lager:warning("DDFS master died: ~p", [Reason]).
 
 code_change(_OldVsn, State, _Extra) -> {ok, State}.
 
@@ -297,7 +307,6 @@ do_tag_notify(M, Tag, #state{tags = Tags, tag_cache = Cache} = S) ->
 
 -spec do_update_nodes([{node(), boolean(), boolean()}], state()) -> state().
 do_update_nodes(NewNodes, #state{nodes = Nodes, tags = Tags} = S) ->
-    error_logger:info_report({"DDFS UPDATE NODES", NewNodes}),
     WriteBlacklist = lists:sort([Node || {Node, false, _} <- NewNodes]),
     ReadBlacklist = lists:sort([Node || {Node, _, false} <- NewNodes]),
     OldNodes = gb_trees:from_orddict(Nodes),
@@ -341,7 +350,8 @@ do_tag_exit(Pid, S) ->
     S#state{tags = gb_trees:from_orddict(NewTags)}.
 
 -spec do_get_tags('all' | 'filter', [node()]) -> {[node()], [node()], [binary()]};
-                 ('safe', [node()]) -> {'ok', [binary()]} | 'too_many_failed_nodes'.
+                 ('safe', [node()]) -> {'ok', [binary()]} | 'too_many_failed_nodes';
+                 ('gc', [node()]) -> {'ok', [binary()], [node()]} | 'too_many_failed_nodes'.
 do_get_tags(all, Nodes) ->
     {Replies, Failed} =
         gen_server:multi_call(Nodes, ddfs_node, get_tags, ?NODE_TIMEOUT),
@@ -367,24 +377,71 @@ do_get_tags(safe, Nodes) ->
             {ok, Tags};
         _ ->
             too_many_failed_nodes
+    end;
+
+% The returned tag list may include +deleted.
+do_get_tags(gc, Nodes) ->
+    {OkNodes, Failed, Tags} = do_get_tags(all, Nodes),
+    TagMinK = list_to_integer(disco:get_setting("DDFS_TAG_MIN_REPLICAS")),
+    case length(Failed) < TagMinK of
+        false ->
+            too_many_failed_nodes;
+        true ->
+            case tag_operation(get_tagnames, <<"+deleted">>, ?NODEOP_TIMEOUT) of
+                {ok, Deleted} ->
+                    TagSet = gb_sets:from_ordset(Tags),
+                    NotDeleted = gb_sets:subtract(TagSet, Deleted),
+                    {ok, gb_sets:to_list(NotDeleted), OkNodes};
+                E ->
+                    E
+            end
+    end.
+
+% Timeouts in this call by the below processes can cause ddfs_master
+% itself to crash, since the processes are linked to it.
+-spec safe_get_read_nodes() -> {ok, [node()], non_neg_integer()} | error.
+safe_get_read_nodes() ->
+    try get_read_nodes() of
+        {ok, _ReadableNodes, _RBSize} = RN ->
+            RN;
+        E ->
+            lager:error("unexpected response retrieving readable nodes: ~p", [E]),
+            error
+    catch
+        K:E ->
+            lager:error("error retrieving readable nodes: ~p:~p", [K, E]),
+            error
     end.
 
 -spec monitor_diskspace() -> no_return().
 monitor_diskspace() ->
-    {ok, ReadableNodes, _RBSize} = get_read_nodes(),
-    {Space, _F} = gen_server:multi_call(ReadableNodes,
-                                        ddfs_node,
-                                        get_diskspace,
-                                        ?NODE_TIMEOUT),
-    update_nodestats(gb_trees:from_orddict(lists:keysort(1, Space))),
+    case safe_get_read_nodes() of
+        {ok, ReadableNodes, _RBSize} ->
+            {Space, _F} = gen_server:multi_call(ReadableNodes,
+                                                ddfs_node,
+                                                get_diskspace,
+                                                ?NODE_TIMEOUT),
+            update_nodestats(gb_trees:from_orddict(lists:keysort(1, Space)));
+        error ->
+            ok
+    end,
     timer:sleep(?DISKSPACE_INTERVAL),
     monitor_diskspace().
 
 -spec refresh_tag_cache_proc() -> no_return().
 refresh_tag_cache_proc() ->
-    {ok, ReadableNodes, RBSize} = get_read_nodes(),
-    refresh_tag_cache(ReadableNodes, RBSize),
-    timer:sleep(?TAG_CACHE_INTERVAL),
+    case safe_get_read_nodes() of
+        {ok, ReadableNodes, RBSize} ->
+            refresh_tag_cache(ReadableNodes, RBSize);
+        error ->
+            ok
+    end,
+    receive
+        refresh ->
+            ok
+    after ?TAG_CACHE_INTERVAL ->
+            ok
+    end,
     refresh_tag_cache_proc().
 
 -spec refresh_tag_cache([node()], non_neg_integer()) -> 'ok'.

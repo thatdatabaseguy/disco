@@ -62,6 +62,7 @@ unpack_objname(Obj) ->
     [Name, Tstamp] = string:tokens(Obj, "$"),
     {list_to_binary(Name), timestamp_to_time(Tstamp)}.
 
+-spec url_to_name(binary()) -> binary() | 'false'.
 url_to_name(<<"tag://", Name/binary>>) ->
     Name;
 url_to_name(Url) ->
@@ -110,14 +111,13 @@ to_hex(Int, L) ->
 hashdir(Name, Host, Type, Root, Vol) ->
     <<D0:8, _/binary>> = erlang:md5(Name),
     D1 = to_hex(D0),
-    Dir = lists:flatten([if length(D1) == 1 -> "0"; true -> "" end, D1]),
+    Dir = lists:flatten([case D1 of [_] -> "0"; _ -> "" end, D1]),
     Path = filename:join([Vol, Type, Dir]),
     Url = list_to_binary(["disco://", Host, "/ddfs/", Path, "/", Name]),
     Local = filename:join(Root, Path),
     {ok, Local, Url}.
 
-
--spec parse_url(binary()|string()) ->
+-spec parse_url(binary() | string()) ->
         'not_ddfs' | {host(), volume_name(), object_type(), string(), object_name()}.
 parse_url(Url) when is_binary(Url) ->
     parse_url(binary_to_list(Url));

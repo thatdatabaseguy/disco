@@ -40,8 +40,7 @@
 get_setting(SettingName) ->
     case os:getenv(SettingName) of
         false ->
-            error_logger:warning_report(
-              {"Required setting", SettingName, "missing!"}),
+            lager:warning("Required setting ~p missing!", [SettingName]),
             exit(["Must specify ", SettingName]);
         Val ->
             Val
@@ -57,8 +56,8 @@ has_setting(SettingName) ->
 
 -spec settings() -> [nonempty_string()].
 settings() ->
-    lists:filter(fun has_setting/1,
-                 string:tokens(get_setting("DISCO_SETTINGS"), ",")).
+    [T || T <- string:tokens(get_setting("DISCO_SETTINGS"), ","),
+	  has_setting(T)].
 
 -spec host(node()) -> string().
 host(Node) ->
@@ -164,7 +163,7 @@ format_time(Ms) when is_integer(Ms) ->
 format_time(Ms, Second, Minute, Hour) ->
     format("~B:~2.10.0B:~2.10.0B.~3.10.0B", [Hour, Minute, Second, Ms]).
 
--spec format_time_since(disco_util:timestamp()) -> nonempty_string().
+-spec format_time_since(erlang:timestamp()) -> nonempty_string().
 format_time_since(Time) ->
     format_time(timer:now_diff(now(), Time)).
 

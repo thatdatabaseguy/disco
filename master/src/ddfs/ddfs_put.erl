@@ -11,7 +11,7 @@
 -define(MAX_RECV_BODY, (1024*1024*1024*1024)).
 
 start(MochiConfig) ->
-    error_logger:info_report({"START", ?MODULE, self()}),
+    error_logger:info_msg("Starting ~p on ~p", [?MODULE, node()]),
     mochiweb_http:start([
         {name, ddfs_put},
         {max, ?HTTP_MAX_CONNS},
@@ -77,7 +77,8 @@ receive_blob(Req, {Path, Fname}, Url) ->
 -spec receive_blob(module(), file:io_device(), nonempty_string(),
     nonempty_string()) -> _.
 receive_blob(Req, IO, Dst, Url) ->
-    error_logger:info_report({"PUT BLOB", Req:get(path), Req:get_header_value("content-length")}),
+    error_logger:info_msg("PUT BLOB: ~p (~p bytes) on ~p",
+                          [Req:get(path), Req:get_header_value("content-length"), node()]),
     case catch receive_body(Req, IO) of
         ok ->
             [_, Fname] = string:tokens(filename:basename(Dst), "."),
@@ -114,18 +115,21 @@ receive_body(Req, IO) ->
     case R0 of
         % R == <<>> or undefined if body is empty
         R when is_integer(R); R =:= <<>>; R =:= undefined ->
-            error_logger:info_report({"PUT BLOB: receive_body done", Req:get(path), R}),
+            error_logger:info_msg("PUT BLOB done with ~p (~p) on ~p",
+                                  [Req:get(path), R, node()]),
             case [file:sync(IO), file:close(IO)] of
                 [ok, ok] -> ok;
                 E -> hd([X || X <- E, X =/= ok])
             end;
         Error ->
-            error_logger:info_report({"PUT BLOB: receive_body error", Req:get(path), Error}),
+            error_logger:info_msg("PUT BLOB error for ~p on ~p: ~p",
+                                  [Req:get(path), node(), Error]),
             Error
     end.
 
 -spec error_reply(module(), nonempty_string(), nonempty_string(), _) -> _.
 error_reply(Req, Msg, Dst, Err) ->
     M = io_lib:format("~s (path: ~s): ~p", [Msg, Dst, Err]),
-    error_logger:warning_report(M),
+    error_logger:warning_msg("Error response for ~p on ~p: ~p (error ~p)",
+                             [Dst, node(), Msg, Err]),
     Req:respond({500, [], M}).
