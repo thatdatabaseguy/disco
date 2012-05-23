@@ -304,6 +304,8 @@ class Worker(worker.Worker):
                             part = str(self['partition'](key, self['partitions'], params))
                         output(part).add(key, val)
                 else:
+                    if self['partitions']:
+                        part = str(self['partition'](key, self['partitions'], params))
                     output(part).add(key, val)
 
         if self['combiner']:
