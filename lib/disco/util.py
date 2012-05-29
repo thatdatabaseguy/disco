@@ -137,10 +137,11 @@ def shuffled(object):
     return shuffled
 
 def argcount(object):
+    self_arg = int(hasattr(object, 'im_self'))
     if hasattr(object, 'func_code'):
-        return object.func_code.co_argcount
+        return object.func_code.co_argcount - self_arg
     argcount = object.func.func_code.co_argcount
-    return argcount - len(object.args or ()) - len(object.keywords or ())
+    return argcount - len(object.args or ()) - len(object.keywords or ()) - self_arg
 
 def globalize(object, globals):
     if isinstance(object, functools.partial):
