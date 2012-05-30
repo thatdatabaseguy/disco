@@ -10,7 +10,7 @@ from disco.error import DataError
 MB = 1024**2
 MIN_DISK_SPACE  = 1 * MB
 MAX_RECORD_SIZE = 1 * MB
-HUNK_SIZE       = 8 * MB
+HUNK_SIZE       = 1 * MB
 CHUNK_SIZE      = 64 * MB
 
 # chunk size seems to be ~ half what it should be
@@ -110,8 +110,6 @@ class DiscoOutputStream_v1(object):
 
     def hunk_write(self, data):
         size = len(data)
-        if self.max_record_size and size > self.max_record_size:
-            raise ValueError("Record too big to write to hunk")
         self.hunk.write(data)
         self.hunk_size += size
 
