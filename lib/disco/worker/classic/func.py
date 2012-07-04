@@ -311,61 +311,38 @@ def re_reader(item_re_str, fd, size, fname, output_tail=False, read_buffer_size=
     item_re = re.compile(item_re_str)
     tail = ''
     len_tail = 0
-    if hasattr(fd, 'fileno'):
-        # Memory mapped file should be the most efficient way to do this
-        # can be accessed directly from 
-        import mmap
-        
-        # mmap-ing a zero-length file throws an error
-        if size == 0:
-            return
-    
-        mm_file = mmap.mmap(fd.fileno(), 0, prot=mmap.PROT_READ)
-        for m in item_re.finditer(mm_file):
+    from cStringIO import StringIO
+    buf = StringIO()
+    tot = 0
+    while True:
+        if size:
+            r = fd.read(min(read_buffer_size, size-tot))
+        else:
+            r = fd.read(read_buffer_size)
+        tot += len(r)
+        buf.write(r)
+        buf_val = buf.getvalue()
+        for m in item_re.finditer(buf_val):
             yield m.groups()
-        if m and m.end() != len(mm_file):
-            if output_tail:
-                tail = mm_file[m.end():]
-            len_tail = len(mm_file) - m.end()
-        mm_file.close()
-        
-    else:
-        from cStringIO import StringIO
-        buf = StringIO()
-        tot = 0
-        while True:
-            if size:
-                r = fd.read(min(read_buffer_size, size-tot))
-            else:
-                r = fd.read(read_buffer_size)
-                
-            tot += len(r)
-            buf.write(r)
-            buf_val = buf.getvalue()
-            
-            for m in item_re.finditer(buf_val):
-                yield m.groups()
-            
-            if m:
-                buf_val = buf_val[m.end():]
-                buffer = StringIO()
-                buffer.write(buf_val)
-                
-            if not len(r) or (size!=None and tot >= size):    
-                if size != None and tot < size:
-                    raise DataError("Truncated input: "\
-                    "Expected %d bytes, got %d" % (size, tot), fname)
-                break
-            
-        tail = buf_val
-        len_tail = len(tail)
-        
+        if m:
+            buf_val = buf_val[m.end():]
+            buffer = StringIO()
+            buffer.write(buf_val)
+        if not len(r) or (size!=None and tot >= size):    
+            if size != None and tot < size:
+                raise DataError("Truncated input: "\
+                "Expected %d bytes, got %d" % (size, tot), fname)
+            break
+    tail = buf_val
+    len_tail = len(tail)
     if len(tail) > 0:
         if output_tail:
             yield [tail]
         else:
             print "Couldn't match the last %d bytes in %s. "\
             "Some bytes may be missing from input." % (len_tail, fname)                        
+
+
 
 def default_partition(key, nr_partitions, params):
     """Returns ``hash(str(key)) % nr_partitions``."""
@@ -530,6 +507,35 @@ def discodb_output(stream, partition, url, params):
     from disco.worker.classic.func import DiscoDBOutput
     return DiscoDBOutput(stream, params), 'discodb:%s' % url.split(':', 1)[1]
 
+def delimited_reader(fd, size, fname, delimiter, line_terminator='\n', read_buffer_size=8192):
+    tail = []
+    tot = 0
+    while True:
+        if size:
+            r = fd.read(min(read_buffer_size, size-tot))
+        else:
+            r = fd.read(read_buffer_size)
+        tot += len(r)
+        split_lines = r.split(line_terminator)
+        if len(split_lines) > 1:
+            tail.append(split_lines[0])
+            split_lines[0] = ''.join(tail)
+            tail = []
+        tail.append(split_lines[-1])
+        for line in split_lines[:-1]:
+            yield line.split(delimiter)
+        if not len(r) or (size!=None and tot >= size):    
+            if size != None and tot < size:
+                raise DataError("Truncated input: "\
+                "Expected %d bytes, got %d" % (size, tot), fname)
+            break
+    if len(tail) > 0:
+        if output_tail:
+            yield tail
+        else:
+            print "Couldn't match the last %d bytes in %s. "\
+            "Some bytes may be missing from input." % (sum((len(chunk) for chunk in tail)), fname)                        
+  
 def disk_sort(worker, input, filename, sort_buffer_size='10%'):
     from os.path import getsize
     from disco.comm import open_local
@@ -551,7 +557,7 @@ def disk_sort(worker, input, filename, sort_buffer_size='10%'):
     unix_sort(filename, sort_buffer_size=sort_buffer_size)
     worker.send('MSG', ("Finished sorting"))
     fd = open_local(filename)
-    for k, v in re_reader("(?s)(.*?)\xff(.*?)\x00", fd, len(fd), fd.url):
+    for k, v in delimited_reader(fd, len(fd), fd.url, delimiter='\xff', line_terminator='\x00'):
         yield k, cPickle.loads(v)
 
 def unix_sort(filename, sort_buffer_size='10%'):
