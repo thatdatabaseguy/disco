@@ -507,7 +507,7 @@ def discodb_output(stream, partition, url, params):
     from disco.worker.classic.func import DiscoDBOutput
     return DiscoDBOutput(stream, params), 'discodb:%s' % url.split(':', 1)[1]
 
-def delimited_reader(fd, size, fname, delimiter, line_terminator='\n', read_buffer_size=8192):
+def delimited_reader(fd, size, fname, delimiter, line_terminator='\n', output_tail=False, read_buffer_size=8192):
     tail = []
     tot = 0
     while True:
