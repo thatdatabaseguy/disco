@@ -302,17 +302,30 @@ class Worker(worker.Worker):
                     for key, val in self['combiner'](key, val, buf, False, params) or ():
                         if self['partitions']:
                             part = str(self['partition'](key, self['partitions'], params))
-                        output(part).add(key, val)
+                        if hasattr(part, '__iter__):
+                            for p in part:
+                                output(p).add(key, val)
+                        else:
+                            output(part).add(key, val)
                 else:
                     if self['partitions']:
                         part = str(self['partition'](key, self['partitions'], params))
-                    output(part).add(key, val)
+                    if hasattr(part, '__iter__'):
+                        for p in part:
+                            output(p).add(key, val)
+                    else:
+                        output(part).add(key, val)
 
         if self['combiner']:
+            part = None
             for key, val in self['combiner'](None, None, buf, True, params) or ():
                 if self['partitions']:
                     part = str(self['partition'](key, self['partitions'], params))
-                output(part).add(key, val)
+                if hasattr(part, '__iter__'):
+                    for p in part:
+                        output(p).add(key,val)
+                else:
+                    output(part).add(key, val)
 
     def reduce_input(self, task, params):
         # master should feed only the partitioned inputs to reduce (and shuffle them?)
