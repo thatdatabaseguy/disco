@@ -521,7 +521,8 @@ def delimited_reader(fd, size, fname, delimiter, line_terminator='\n', output_ta
             tail.append(split_lines[0])
             split_lines[0] = ''.join(tail)
             tail = []
-        tail.append(split_lines[-1])
+        if split_lines[-1] != '':
+            tail.append(split_lines[-1])
         for line in split_lines[:-1]:
             yield line.split(delimiter)
         if not len(r) or (size!=None and tot >= size):    
