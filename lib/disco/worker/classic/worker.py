@@ -302,7 +302,7 @@ class Worker(worker.Worker):
                     for key, val in self['combiner'](key, val, buf, False, params) or ():
                         if self['partitions']:
                             part = self['partition'](key, self['partitions'], params)
-                        if hasattr(part, '__iter__):
+                        if hasattr(part, '__iter__'):
                             for p in part:
                                 output(str(p)).add(key, val)
                         else:
